@@ -1,31 +1,34 @@
 #!/bin/bash
 
 cd /root/backup/
-siteall_sql_tar=$(date +%s).siteall.sql.tar.gz
-siteall_files_tar=$(date +%s).siteall_files.tar.gz
-siteall_etc_tar=$(date +%s).siteall_etc.tar.gz
+site_sql_tar=$(date +%s).site.sql.tar.gz
+site_files_tar=$(date +%s).site_files.tar.gz
+site_etc_tar=$(date +%s).site_etc.tar.gz
 
-mysqldump --all-databases > siteall.sql
+mysqldump --all-databases > site.sql
 
-tar -czf $siteall_sql_tar siteall.sql
-tar -czf $siteall_files_tar /var/www/
-tar -czf $siteall_etc_tar /etc
-rm siteall.sql
+tar -czf $site_sql_tar site.sql
+tar -czf $site_files_tar /var/www/
+tar -czf $site_etc_tar /etc
+rm site.sql
 
 files_to_upload="
-$siteall_sql_tar
-$siteall_files_tar
-$siteall_etc_tar
+$site_sql_tar
+$site_files_tar
+$site_etc_tar
 "
 
+HOST="ip"
+USER="login"
+PASS="pass"
+FTPURL="ftp://$USER:$PASS@$HOST"
+LCD="/root/backup"
+RCD="/remote/path"
+LFTP=`which lftp`
+
+STORE_DAYS=3
 
 for file in $files_to_upload; do
-    HOST="1.1.76.50"
-    USER="acc"
-    PASS="pass"
-    FTPURL="ftp://$USER:$PASS@$HOST"
-    LCD="/root/backup"
-    RCD="/2020/database"
     lftp -c "set ftp:list-options -a;
     open '$FTPURL';
     lcd $LCD;
@@ -34,56 +37,39 @@ for file in $files_to_upload; do
 	echo $(date) $file backuping done
 done
 
-ftpsite="1.1.76.50"
-ftpuser="acc"
-ftppass="pass"
-putdir="/backup"
+function removeOlderThanDays() {
 
-ndays=6
+    LIST=`mktemp`
+    DELLIST=`mktemp`
 
-# work out our cutoff date
-MM="$(date --date="$ndays days ago" +%b)"
-DD="$(date --date="$ndays days ago" +%d)"
-
-
-echo removing files older than $MM $DD
-
-# get directory listing from remote source
-listing=`ftp -i -n $ftpsite <<EOMYF 
-user $ftpuser $ftppass
-binary
-cd $putdir
-ls
+${LFTP} << EOF
+open ${USER}:${PASS}@${HOST}
+cd ${RCD}
+cache flush
+cls -q -1 --date --time-style="+%Y%m%d" > ${LIST}
 quit
-EOMYF
-`
-lista=( $listing )
-MM=$(tr -dc '0-9' <<< $MM)
-DD=$(tr -dc '0-9' <<< $DD)
-MM=${MM#0}
-DD=${DD#0}
-# loop over our files
-for ((FNO=0; FNO<${#lista[@]}; FNO+=9));do
-  # month (element 5), day (element 6) and filename (element 8)
-  #echo Date ${lista[`expr $FNO+5`]} ${lista[`expr $FNO+6`]}          File: ${lista[`expr $FNO+8`]}
+EOF
 
-  # check the date stamp
-  if [ ${lista[`expr $FNO+5`]}=$MM ];
-  then
-    if [[ "${lista[`expr $FNO+6`]}" -lt $DD ]];
-    then
-      # Remove this file
-      echo "Removing ${lista[`expr $FNO+8`]}"
-      ftp -i -n $ftpsite <<EOMYF2 
-      user $ftpuser $ftppass
-      binary
-      cd $putdir
-      quit
-EOMYF2
-
-
+    STORE_DATE=$(date -d "now - ${STORE_DAYS} days" '+%Y%m%d')
+    while read LINE; do
+        if [[ ${STORE_DATE} -ge ${LINE:0:8} && "${LINE}" != *\/ ]]; then
+            echo "rm -f \"${LINE:9}\"" >> ${DELLIST}
+            echo "${LINE:9} ${LINE:0:8} will be deleted"
+        fi
+    done < ${LIST}
+    if [ ! -f ${DELLIST}  ] || [ -z "$(cat ${DELLIST})" ]; then
+        echo "Delete list doesn't exist or empty, nothing to delete. Exiting"
     fi
-  fi
-done
 
-find /root/backup/ -type f -name '*tar.gz' -mtime +1 -delete
+${LFTP} << EOF
+open ${USER}:${PASS}@${HOST}
+cd ${RCD}
+$(cat ${DELLIST})
+quit
+EOF
+rm ${LIST} ${DELLIST}
+}
+
+removeOlderThanDays
+
+find /root/backup/ -type f -name '*tar.gz' -mtime +3 -delete
